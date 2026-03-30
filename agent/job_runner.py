@@ -1,5 +1,6 @@
 """Job runner — executes training and inference jobs on the GPU."""
 
+import asyncio
 import json
 import logging
 import os
