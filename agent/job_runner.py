@@ -46,6 +46,8 @@ class JobRunner:
         try:
             if job_type == "train":
                 return await self._run_training(job_id, config, progress_callback)
+            elif job_type == "inference":
+                return await self._run_inference(job_id, config, progress_callback)
             else:
                 return {"status": "failed", "error": f"Unknown job type: {job_type}"}
         except Exception as e:
@@ -271,6 +273,78 @@ class JobRunner:
             "loss": result.training_loss,
             "steps": result.global_step,
             "samples": total_samples,
+        }
+
+    async def _run_inference(self, job_id: str, config: dict, progress_callback) -> dict:
+        """Load base model + LoRA adapter and run inference."""
+        server_base = config["server_base_url"]
+        adapter_url = config.get("adapter_url")
+        base_model = config.get("base_model", "Qwen/Qwen2.5-7B-Instruct")
+        instruction = config.get("instruction", "")
+        input_text = config.get("input_text", "")
+        max_tokens = config.get("max_tokens", 1024)
+        temperature = config.get("temperature", 0.3)
+
+        # Download adapter if provided
+        adapter_path = None
+        if adapter_url:
+            await progress_callback(job_id, "Downloading adapter...")
+            adapter_zip = self.model_cache_dir / f"inf_adapter_{job_id}.zip"
+            adapter_path = str(self.model_cache_dir / f"inf_adapter_{job_id}")
+            await self._download_file(f"{server_base}{adapter_url}", str(adapter_zip))
+            with zipfile.ZipFile(str(adapter_zip), "r") as zf:
+                zf.extractall(adapter_path)
+
+        await progress_callback(job_id, "Loading model...")
+
+        # Load base model
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_quant_type="nf4",
+        )
+        model = AutoModelForCausalLM.from_pretrained(
+            base_model,
+            quantization_config=bnb_config,
+            device_map="auto",
+            trust_remote_code=True,
+        )
+        tokenizer = AutoTokenizer.from_pretrained(base_model, trust_remote_code=True)
+
+        # Load LoRA adapter
+        if adapter_path:
+            await progress_callback(job_id, "Loading adapter...")
+            model = PeftModel.from_pretrained(model, adapter_path)
+
+        await progress_callback(job_id, "Generating...")
+
+        # Build chat messages
+        messages = [
+            {"role": "system", "content": instruction},
+            {"role": "user", "content": input_text},
+        ]
+        text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        inputs = tokenizer(text, return_tensors="pt").to(model.device)
+
+        with torch.no_grad():
+            output_ids = model.generate(
+                **inputs,
+                max_new_tokens=max_tokens,
+                temperature=temperature,
+                do_sample=temperature > 0,
+                pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
+            )
+
+        new_tokens = output_ids[0][inputs["input_ids"].shape[1]:]
+        response = tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+
+        # Cleanup GPU memory
+        del model, inputs, output_ids
+        torch.cuda.empty_cache()
+
+        return {
+            "status": "completed",
+            "result": {"response": response},
         }
 
     async def _download_file(self, url: str, dest: str):

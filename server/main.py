@@ -381,28 +381,43 @@ async def api_inference(
     max_tokens: int = Form(1024),
     temperature: float = Form(0.3),
 ):
-    adapter_path = None
+    """Dispatch inference to Colab GPU agent and wait for result."""
+    if not live_agents:
+        raise HTTPException(400, "No GPU agent connected. Start the Colab notebook first.")
+
+    adapter_url = None
     if adapter_id:
         adapter = get_adapter(adapter_id)
         if not adapter:
             raise HTTPException(404, "Adapter not found")
         if adapter["status"] != "ready":
             raise HTTPException(400, f"Adapter status is '{adapter['status']}', must be 'ready'")
-        adapter_path = adapter["lora_path"]
+        adapter_url = f"/api/adapters/{adapter_id}/download"
 
-    try:
-        _load_gpu_modules()
-        response = engine.generate(
-            instruction=instruction,
-            input_text=input_text,
-            adapter_id=adapter_id,
-            adapter_path=adapter_path,
-            max_new_tokens=max_tokens,
-            temperature=temperature,
-        )
-        return {"response": response}
-    except Exception as e:
-        raise HTTPException(500, str(e))
+    # Create inference job
+    job = create_job(
+        job_type="inference",
+        adapter_id=adapter_id,
+        config={
+            "instruction": instruction,
+            "input_text": input_text,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "adapter_url": adapter_url,
+        },
+    )
+
+    # Wait for agent to pick it up and complete (poll for up to 5 minutes)
+    for _ in range(300):
+        await asyncio.sleep(1)
+        j = get_job(job["id"])
+        if j["status"] == "completed":
+            config = json.loads(j["config"]) if isinstance(j["config"], str) else j["config"]
+            return {"response": config.get("response", "")}
+        elif j["status"] == "failed":
+            raise HTTPException(500, j.get("error", "Inference failed"))
+
+    raise HTTPException(504, "Inference timed out")
 
 
 # ──────────────────────────────────────────────
@@ -534,9 +549,9 @@ async def agent_connect(websocket: WebSocket):
                            config=json.dumps(result))
                 live_agents[agent_id]["state"] = "AVAILABLE"
 
-                # Update adapter
+                # Update adapter for training jobs
                 job = get_job(job_id)
-                if job and job.get("adapter_id"):
+                if job and job.get("job_type") == "train" and job.get("adapter_id"):
                     adapter_dir = ADAPTER_DIR / job["adapter_id"]
                     update_adapter(
                         job["adapter_id"],
@@ -568,7 +583,28 @@ async def agent_connect(websocket: WebSocket):
 
 
 def _find_pending_agent_job() -> dict | None:
-    """Find a pending training job to assign to an agent."""
+    """Find a pending training or inference job to assign to an agent."""
+    # Check inference jobs first (higher priority — user is waiting)
+    for job in list_jobs(job_type="inference", limit=5):
+        if job["status"] == "pending":
+            config = json.loads(job["config"]) if isinstance(job["config"], str) else (job["config"] or {})
+            update_job(job["id"], status="assigned")
+            return {
+                "type": "job_assign",
+                "job_id": job["id"],
+                "job_type": "inference",
+                "config": json.dumps({
+                    "server_base_url": SERVER_BASE_URL,
+                    "base_model": BASE_MODEL,
+                    "instruction": config.get("instruction", ""),
+                    "input_text": config.get("input_text", ""),
+                    "max_tokens": config.get("max_tokens", 1024),
+                    "temperature": config.get("temperature", 0.3),
+                    "adapter_url": config.get("adapter_url"),
+                }),
+            }
+
+    # Then training jobs
     jobs = list_jobs(job_type="train", limit=10)
     for job in jobs:
         if job["status"] == "pending":
@@ -595,10 +631,10 @@ def _find_pending_agent_job() -> dict | None:
                     "adapter_upload_url": f"/api/adapters/{adapter_id}/upload" if adapter_id else "",
                     "base_model": BASE_MODEL,
                     "epochs": config.get("epochs", 3),
-                    "batch_size": config.get("batch_size", 4),
+                    "batch_size": config.get("batch_size", 1),
                     "learning_rate": config.get("learning_rate", 2e-4),
-                    "lora_rank": config.get("lora_rank", 16),
-                    "lora_alpha": config.get("lora_alpha", 32),
+                    "lora_rank": config.get("lora_rank", 8),
+                    "lora_alpha": config.get("lora_alpha", 16),
                     "resume_from_url": resume_from_url,
                 }),
             }
