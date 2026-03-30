@@ -266,10 +266,12 @@ async function loadInterfaces() {
     ${list.map(i => `<tr><td><strong>${i.name}</strong></td><td>${i.file_type}</td><td>${i.description||''}</td>
     <td><button class="btn btn-danger btn-sm" onclick="deleteInterface('${i.id}')">Delete</button></td></tr>`).join('')}</table>`;
 
-  // Populate selects
+  // Populate selects — preserve current selection
   ['adapter-iface','dp-iface'].forEach(id => {
     const sel = document.getElementById(id);
+    const prev = sel.value;
     sel.innerHTML = list.map(i => `<option value="${i.id}">${i.name}</option>`).join('');
+    if (prev) sel.value = prev;
   });
 }
 
@@ -302,14 +304,18 @@ async function loadAdapters() {
     <td>${a.train_samples||'-'}</td><td>${a.train_loss ? a.train_loss.toFixed(4) : '-'}</td>
     <td><button class="btn btn-danger btn-sm" onclick="deleteAdapter('${a.id}')">Delete</button></td></tr>`).join('')}</table>`;
 
-  // Populate selects
+  // Populate selects — preserve current selection
   ['train-adapter'].forEach(id => {
     const sel = document.getElementById(id);
+    const prev = sel.value;
     sel.innerHTML = list.map(a => `<option value="${a.id}">${a.name} (${a.status})</option>`).join('');
+    if (prev) sel.value = prev;
   });
   const infSel = document.getElementById('inf-adapter');
+  const prevInf = infSel.value;
   infSel.innerHTML = '<option value="">Base Model (no adapter)</option>' +
     list.filter(a => a.status === 'ready').map(a => `<option value="${a.id}">${a.name}</option>`).join('');
+  if (prevInf) infSel.value = prevInf;
 }
 
 async function createAdapter() {
@@ -392,11 +398,13 @@ async function loadGeminiJobs() {
 async function loadDatasetJobs() {
   const jobs = await api('/api/jobs?job_type=dataprep');
   const sel = document.getElementById('train-dataset');
+  const prev = sel.value;
   const completed = jobs.filter(j => j.status === 'completed');
   sel.innerHTML = completed.map(j => {
     const cfg = JSON.parse(j.config || '{}');
     return `<option value="${j.id}">${j.id.slice(0,8)} — ${cfg.pairs_count||'?'} pairs</option>`;
   }).join('');
+  if (prev) sel.value = prev;
 }
 
 async function startTraining() {
