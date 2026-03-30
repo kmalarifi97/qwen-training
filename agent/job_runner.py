@@ -12,6 +12,7 @@ from datasets import Dataset
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
+    BitsAndBytesConfig,
     TrainingArguments,
     Trainer,
     DataCollatorForSeq2Seq,
@@ -163,12 +164,16 @@ class JobRunner:
         await progress_callback(job_id, f"Loading {base_model}...")
 
         # Load model in 4-bit
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_quant_type="nf4",
+        )
         model = AutoModelForCausalLM.from_pretrained(
             base_model,
-            torch_dtype=torch.bfloat16,
+            quantization_config=bnb_config,
             device_map="auto",
             trust_remote_code=True,
-            load_in_4bit=True,
         )
 
         if resume_from and Path(resume_from).exists():
