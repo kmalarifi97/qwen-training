@@ -43,6 +43,11 @@ class JobRunner:
         except (json.JSONDecodeError, TypeError):
             config = {}
 
+        # Clear GPU memory before each job
+        import gc
+        gc.collect()
+        torch.cuda.empty_cache()
+
         try:
             if job_type == "train":
                 return await self._run_training(job_id, config, progress_callback)
