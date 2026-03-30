@@ -300,7 +300,8 @@ def batch_csv_rows(columns: list[str], rows: list[dict],
 
 
 async def _call_gemini(prompt: str) -> str | None:
-    """Call Gemini API, return raw text response."""
+    """Call Gemini API, return raw text response.
+    Handles thinking mode: skips 'thought' parts, returns actual content."""
     payload = {
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
         "generationConfig": {
@@ -319,7 +320,15 @@ async def _call_gemini(prompt: str) -> str | None:
             print(f"[gemini] API error: {data['error'].get('message', '?')}")
             return None
 
-        return data["candidates"][0]["content"]["parts"][0]["text"]
+        # Gemini 2.5 may return multiple parts: thought parts + actual content
+        # Skip any part with "thought": true, get the real output
+        parts = data["candidates"][0]["content"]["parts"]
+        for part in reversed(parts):
+            if not part.get("thought", False) and "text" in part:
+                return part["text"]
+
+        # Fallback: return last part's text
+        return parts[-1].get("text", "")
 
 
 async def generate_pairs_gemini_csv(
