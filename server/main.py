@@ -525,11 +525,11 @@ async def agent_connect(websocket: WebSocket):
                 job_id = data["job_id"]
                 update_job(job_id, status="running")
                 live_agents[agent_id]["state"] = "WORKING"
-                # Update adapter status
+                # Only update adapter status for training jobs, not inference
                 job = get_job(job_id)
-                if job and job.get("adapter_id"):
+                if job and job.get("job_type") == "train" and job.get("adapter_id"):
                     update_adapter(job["adapter_id"], status="training")
-                print(f"[*] Job {job_id[:8]} started on {agent_name}")
+                print(f"[*] Job {job_id[:8]} ({job.get('job_type','?')}) started on {agent_name}")
 
             elif data["type"] == "job_progress":
                 job_id = data["job_id"]
