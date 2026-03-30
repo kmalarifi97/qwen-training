@@ -28,6 +28,10 @@ class JobRunner:
         self.model_cache_dir = Path(model_cache_dir)
         self.model_cache_dir.mkdir(parents=True, exist_ok=True)
         self._cancelled = False
+        # Cached model for fast inference
+        self._model = None
+        self._tokenizer = None
+        self._loaded_adapter = None  # adapter path currently loaded
 
     def cancel(self):
         self._cancelled = True
@@ -43,13 +47,17 @@ class JobRunner:
         except (json.JSONDecodeError, TypeError):
             config = {}
 
-        # Clear GPU memory before each job
-        import gc
-        gc.collect()
-        torch.cuda.empty_cache()
-
         try:
             if job_type == "train":
+                # Unload cached inference model before training
+                if self._model is not None:
+                    del self._model
+                    self._model = None
+                    self._loaded_adapter = None
+                    import gc
+                    gc.collect()
+                    torch.cuda.empty_cache()
+                    logger.info("Cleared cached model for training")
                 return await self._run_training(job_id, config, progress_callback)
             elif job_type == "inference":
                 return await self._run_inference(job_id, config, progress_callback)
@@ -281,7 +289,7 @@ class JobRunner:
         }
 
     async def _run_inference(self, job_id: str, config: dict, progress_callback) -> dict:
-        """Load base model + LoRA adapter and run inference."""
+        """Run inference with cached model. First call loads model (~2 min), subsequent calls are fast (~5s)."""
         server_base = config["server_base_url"]
         adapter_url = config.get("adapter_url")
         base_model = config.get("base_model", "Qwen/Qwen2.5-7B-Instruct")
@@ -290,36 +298,57 @@ class JobRunner:
         max_tokens = config.get("max_tokens", 1024)
         temperature = config.get("temperature", 0.3)
 
-        # Download adapter if provided
+        # Download adapter if needed (only once per adapter)
         adapter_path = None
         if adapter_url:
-            await progress_callback(job_id, "Downloading adapter...")
-            adapter_zip = self.model_cache_dir / f"inf_adapter_{job_id}.zip"
-            adapter_path = str(self.model_cache_dir / f"inf_adapter_{job_id}")
-            await self._download_file(f"{server_base}{adapter_url}", str(adapter_zip))
-            with zipfile.ZipFile(str(adapter_zip), "r") as zf:
-                zf.extractall(adapter_path)
+            # Use a stable path based on adapter URL so we don't re-download
+            adapter_key = adapter_url.split("/")[-2] if "/download" in adapter_url else "default"
+            adapter_path = str(self.model_cache_dir / f"adapter_{adapter_key}")
+            if not Path(adapter_path).exists():
+                await progress_callback(job_id, "Downloading adapter...")
+                adapter_zip = self.model_cache_dir / f"adapter_{adapter_key}.zip"
+                await self._download_file(f"{server_base}{adapter_url}", str(adapter_zip))
+                with zipfile.ZipFile(str(adapter_zip), "r") as zf:
+                    zf.extractall(adapter_path)
 
-        await progress_callback(job_id, "Loading model...")
-
-        # Load base model
-        bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_compute_dtype=torch.bfloat16,
-            bnb_4bit_quant_type="nf4",
+        # Load model if not cached
+        need_reload = (
+            self._model is None
+            or self._loaded_adapter != adapter_path
         )
-        model = AutoModelForCausalLM.from_pretrained(
-            base_model,
-            quantization_config=bnb_config,
-            device_map="auto",
-            trust_remote_code=True,
-        )
-        tokenizer = AutoTokenizer.from_pretrained(base_model, trust_remote_code=True)
 
-        # Load LoRA adapter
-        if adapter_path:
-            await progress_callback(job_id, "Loading adapter...")
-            model = PeftModel.from_pretrained(model, adapter_path)
+        if need_reload:
+            # Free old model
+            if self._model is not None:
+                del self._model
+                self._model = None
+                import gc
+                gc.collect()
+                torch.cuda.empty_cache()
+
+            await progress_callback(job_id, "Loading model (first time, ~2 min)...")
+
+            bnb_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.bfloat16,
+                bnb_4bit_quant_type="nf4",
+            )
+            self._model = AutoModelForCausalLM.from_pretrained(
+                base_model,
+                quantization_config=bnb_config,
+                device_map="auto",
+                trust_remote_code=True,
+            )
+            self._tokenizer = AutoTokenizer.from_pretrained(base_model, trust_remote_code=True)
+
+            if adapter_path:
+                await progress_callback(job_id, "Loading adapter...")
+                self._model = PeftModel.from_pretrained(self._model, adapter_path)
+
+            self._loaded_adapter = adapter_path
+            logger.info("Model loaded and cached for fast inference")
+        else:
+            logger.info("Using cached model — fast inference")
 
         await progress_callback(job_id, "Generating...")
 
@@ -328,24 +357,20 @@ class JobRunner:
             {"role": "system", "content": instruction},
             {"role": "user", "content": input_text},
         ]
-        text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        inputs = tokenizer(text, return_tensors="pt").to(model.device)
+        text = self._tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        inputs = self._tokenizer(text, return_tensors="pt").to(self._model.device)
 
         with torch.no_grad():
-            output_ids = model.generate(
+            output_ids = self._model.generate(
                 **inputs,
                 max_new_tokens=max_tokens,
                 temperature=temperature,
                 do_sample=temperature > 0,
-                pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
+                pad_token_id=self._tokenizer.pad_token_id or self._tokenizer.eos_token_id,
             )
 
         new_tokens = output_ids[0][inputs["input_ids"].shape[1]:]
-        response = tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
-
-        # Cleanup GPU memory
-        del model, inputs, output_ids
-        torch.cuda.empty_cache()
+        response = self._tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
 
         return {
             "status": "completed",
