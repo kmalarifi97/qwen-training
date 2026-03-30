@@ -721,7 +721,7 @@ def api_download_adapter(adapter_id: str):
     zip_path = ADAPTER_DIR / f"{adapter_id}_download.zip"
     with zipfile.ZipFile(str(zip_path), "w", zipfile.ZIP_DEFLATED) as zf:
         for f in adapter_dir.rglob("*"):
-            if f.is_file() and "checkpoint" not in f.name:
+            if f.is_file() and "checkpoint" not in str(f):
                 zf.write(f, f.relative_to(adapter_dir))
 
     return FileResponse(str(zip_path), filename=f"adapter_{adapter_id}.zip")
