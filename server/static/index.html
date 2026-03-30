@@ -65,6 +65,7 @@
 <div class="header">
   <h1>Qwen Training Engine</h1>
   <span class="badge">Local & Private</span>
+  <span id="agent-badge" style="margin-left:auto;font-size:12px;color:#484f58">No GPU agents</span>
 </div>
 
 <div class="layout">
@@ -192,7 +193,13 @@
           <input type="checkbox" id="train-continue" style="width:auto">
           <span>Continue training on existing adapter (feed new data into an already-trained adapter)</span>
         </label>
-        <div class="actions"><button class="btn btn-primary" onclick="startTraining()">Start Training</button></div>
+        <div class="actions">
+          <button class="btn btn-primary" onclick="startTraining()">Train Locally</button>
+          <button class="btn btn-primary" id="btn-train-remote" onclick="startRemoteTraining()" style="background:#1f6feb;border-color:#1f6feb" disabled>
+            Train on GPU Agent
+          </button>
+        </div>
+        <p id="agent-status-line" style="color:#484f58;font-size:12px;margin-top:8px"></p>
       </div>
     </div>
 
@@ -420,9 +427,49 @@ async function loadJobs() {
     }).join('')}</table>`;
 }
 
+// --- Agents ---
+async function loadAgents() {
+  try {
+    const agents = await api('/api/agents');
+    const badge = document.getElementById('agent-badge');
+    const btn = document.getElementById('btn-train-remote');
+    const statusLine = document.getElementById('agent-status-line');
+
+    if (agents.length > 0) {
+      const a = agents[0];
+      const gpu = a.gpu_info;
+      badge.style.color = '#40c057';
+      badge.textContent = `GPU: ${gpu ? gpu.name : 'connected'} (${a.state})`;
+      btn.disabled = false;
+      if (gpu) {
+        statusLine.textContent = `${gpu.name} — ${gpu.vram_free_mb}MB free / ${gpu.vram_total_mb}MB total, ${gpu.temperature_c}°C`;
+      }
+    } else {
+      badge.style.color = '#484f58';
+      badge.textContent = 'No GPU agents';
+      btn.disabled = true;
+      statusLine.textContent = 'No GPU agent connected. Start the Colab notebook to connect one.';
+    }
+  } catch(e) {}
+}
+
+async function startRemoteTraining() {
+  const fd = new FormData();
+  fd.append('adapter_id', document.getElementById('train-adapter').value);
+  fd.append('dataset_job_id', document.getElementById('train-dataset').value);
+  fd.append('epochs', document.getElementById('train-epochs').value);
+  fd.append('learning_rate', document.getElementById('train-lr').value);
+  fd.append('lora_rank', document.getElementById('train-rank').value);
+  fd.append('batch_size', document.getElementById('train-batch').value);
+  fd.append('continue_training', document.getElementById('train-continue').checked);
+  const job = await api('/api/train/remote', { method: 'POST', body: fd });
+  alert('Remote training job queued: ' + job.id + '\nThe GPU agent will pick it up on its next heartbeat.');
+  showSection('jobs');
+}
+
 // --- Refresh all ---
 async function refresh() {
-  await Promise.all([loadInterfaces(), loadAdapters(), loadJobs(), loadDatasetJobs(), loadGeminiJobs()]);
+  await Promise.all([loadInterfaces(), loadAdapters(), loadJobs(), loadDatasetJobs(), loadGeminiJobs(), loadAgents()]);
 }
 
 refresh();

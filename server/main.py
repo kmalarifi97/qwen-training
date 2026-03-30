@@ -7,7 +7,7 @@ import shutil
 import threading
 from pathlib import Path
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -28,9 +28,13 @@ from server.inference import engine
 
 UPLOAD_DIR = Path("/app/data/uploads")
 DATASET_DIR = Path("/app/data/datasets")
+ADAPTER_DIR = Path("/app/data/adapters")
 BASE_MODEL = os.environ.get("BASE_MODEL", "Qwen/Qwen2.5-7B-Instruct")
 
 app = FastAPI(title="Qwen Training Engine", version="1.0.0")
+
+# Live agent connections: agent_id -> {websocket, info}
+live_agents: dict[str, dict] = {}
 
 
 @app.on_event("startup")
@@ -38,6 +42,7 @@ def startup():
     init_db()
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     DATASET_DIR.mkdir(parents=True, exist_ok=True)
+    ADAPTER_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # ──────────────────────────────────────────────
@@ -417,6 +422,259 @@ def api_download_dataset(job_id: str, format: str = "chatml"):
         raise HTTPException(404, "Dataset file not found")
 
     return FileResponse(file_path, filename=Path(file_path).name)
+
+
+# ──────────────────────────────────────────────
+#  GPU Agent — WebSocket + file transfer
+# ──────────────────────────────────────────────
+
+@app.get("/api/agents")
+def api_list_agents():
+    """List connected GPU agents."""
+    return [
+        {
+            "agent_id": aid,
+            "agent_name": info.get("agent_name", ""),
+            "gpu_info": info.get("gpu_info"),
+            "state": info.get("state", "UNKNOWN"),
+            "connected": True,
+        }
+        for aid, info in live_agents.items()
+    ]
+
+
+@app.websocket("/agents/connect")
+async def agent_connect(websocket: WebSocket):
+    await websocket.accept()
+    agent_id = None
+
+    try:
+        # First message = registration
+        raw = await websocket.receive_text()
+        data = json.loads(raw)
+
+        if data.get("type") != "register":
+            await websocket.send_text(json.dumps({"type": "error", "message": "Must register first"}))
+            await websocket.close()
+            return
+
+        agent_id = data.get("agent_id")
+        agent_name = data.get("agent_name", "unknown")
+
+        live_agents[agent_id] = {
+            "websocket": websocket,
+            "agent_name": agent_name,
+            "state": "AVAILABLE",
+            "gpu_info": None,
+        }
+
+        print(f"[+] Agent connected: {agent_id} ({agent_name})")
+
+        await websocket.send_text(json.dumps({
+            "type": "registered",
+            "message": f"Welcome {agent_name}",
+        }))
+
+        # Listen for messages
+        while True:
+            raw = await websocket.receive_text()
+            data = json.loads(raw)
+
+            if data["type"] == "heartbeat":
+                gpu_info = data.get("gpu_info")
+                live_agents[agent_id]["gpu_info"] = gpu_info
+                live_agents[agent_id]["state"] = data.get("state", "AVAILABLE")
+
+                # Check if there's a pending job to assign
+                pending_job = _find_pending_agent_job()
+                if pending_job:
+                    await websocket.send_text(json.dumps(pending_job))
+                else:
+                    await websocket.send_text(json.dumps({"type": "heartbeat_ack"}))
+
+            elif data["type"] == "job_started":
+                job_id = data["job_id"]
+                update_job(job_id, status="running")
+                live_agents[agent_id]["state"] = "WORKING"
+                # Update adapter status
+                job = get_job(job_id)
+                if job and job.get("adapter_id"):
+                    update_adapter(job["adapter_id"], status="training")
+                print(f"[*] Job {job_id[:8]} started on {agent_name}")
+
+            elif data["type"] == "job_progress":
+                job_id = data["job_id"]
+                progress_str = data.get("progress", "")
+                train_info = data.get("train_progress", {})
+                progress_val = None
+                if train_info.get("total_steps") and train_info.get("step"):
+                    progress_val = train_info["step"] / train_info["total_steps"]
+                update_job(job_id, status="running",
+                           progress=progress_val,
+                           config=json.dumps({"progress_detail": progress_str, **train_info}))
+
+            elif data["type"] == "job_completed":
+                job_id = data["job_id"]
+                result = json.loads(data.get("result", "{}"))
+                update_job(job_id, status="completed", progress=1.0,
+                           config=json.dumps(result))
+                live_agents[agent_id]["state"] = "AVAILABLE"
+
+                # Update adapter
+                job = get_job(job_id)
+                if job and job.get("adapter_id"):
+                    adapter_dir = ADAPTER_DIR / job["adapter_id"]
+                    update_adapter(
+                        job["adapter_id"],
+                        status="ready",
+                        lora_path=str(adapter_dir),
+                        train_loss=result.get("final_loss"),
+                        train_samples=result.get("samples", 0),
+                    )
+                print(f"[+] Job {job_id[:8]} completed on {agent_name}")
+
+            elif data["type"] == "job_failed":
+                job_id = data["job_id"]
+                error = data.get("error", "")
+                update_job(job_id, status="failed", error=error)
+                live_agents[agent_id]["state"] = "AVAILABLE"
+
+                job = get_job(job_id)
+                if job and job.get("adapter_id"):
+                    update_adapter(job["adapter_id"], status="failed")
+                print(f"[-] Job {job_id[:8]} failed on {agent_name}: {error}")
+
+    except WebSocketDisconnect:
+        print(f"[-] Agent disconnected: {agent_id}")
+    except Exception as e:
+        print(f"[!] Agent error {agent_id}: {e}")
+    finally:
+        if agent_id:
+            live_agents.pop(agent_id, None)
+
+
+def _find_pending_agent_job() -> dict | None:
+    """Find a pending training job to assign to an agent."""
+    jobs = list_jobs(job_type="train", limit=10)
+    for job in jobs:
+        if job["status"] == "pending":
+            config = json.loads(job["config"]) if isinstance(job["config"], str) else (job["config"] or {})
+
+            # Only dispatch remote jobs (ones without resume_from set locally)
+            dataset_path = config.get("dataset_path", "")
+            adapter_id = job.get("adapter_id", "")
+
+            adapter = get_adapter(adapter_id) if adapter_id else None
+            resume_from_url = None
+            if config.get("continue_training") and adapter and adapter.get("lora_path"):
+                resume_from_url = f"/api/adapters/{adapter_id}/download"
+
+            update_job(job["id"], status="assigned")
+
+            return {
+                "type": "job_assign",
+                "job_id": job["id"],
+                "job_type": "train",
+                "config": json.dumps({
+                    "server_base_url": "",  # agent builds full URL from its connection
+                    "dataset_url": f"/api/datasets/{config.get('dataset_job_id', job['id'])}/download",
+                    "adapter_upload_url": f"/api/adapters/{adapter_id}/upload" if adapter_id else "",
+                    "base_model": BASE_MODEL,
+                    "epochs": config.get("epochs", 3),
+                    "batch_size": config.get("batch_size", 4),
+                    "learning_rate": config.get("learning_rate", 2e-4),
+                    "lora_rank": config.get("lora_rank", 16),
+                    "lora_alpha": config.get("lora_alpha", 32),
+                    "resume_from_url": resume_from_url,
+                }),
+            }
+    return None
+
+
+@app.post("/api/train/remote")
+def api_train_remote(
+    adapter_id: str = Form(...),
+    dataset_job_id: str = Form(...),
+    epochs: int = Form(3),
+    learning_rate: float = Form(2e-4),
+    lora_rank: int = Form(16),
+    batch_size: int = Form(4),
+    continue_training: bool = Form(False),
+):
+    """Queue a training job for a remote GPU agent."""
+    adapter = get_adapter(adapter_id)
+    if not adapter:
+        raise HTTPException(404, "Adapter not found")
+
+    if not live_agents:
+        raise HTTPException(400, "No GPU agents connected")
+
+    dataset_job = get_job(dataset_job_id)
+    if not dataset_job or dataset_job["status"] != "completed":
+        raise HTTPException(400, "Dataset job not found or not completed")
+
+    job = create_job(
+        job_type="train",
+        adapter_id=adapter_id,
+        config={
+            "dataset_job_id": dataset_job_id,
+            "dataset_path": "",  # remote — agent will download
+            "epochs": epochs,
+            "learning_rate": learning_rate,
+            "lora_rank": lora_rank,
+            "batch_size": batch_size,
+            "continue_training": continue_training,
+            "remote": True,
+        },
+    )
+    return job
+
+
+@app.post("/api/adapters/{adapter_id}/upload")
+async def api_upload_adapter(adapter_id: str, file: UploadFile = File(...)):
+    """Receive a trained adapter zip from the GPU agent."""
+    adapter = get_adapter(adapter_id)
+    if not adapter:
+        raise HTTPException(404, "Adapter not found")
+
+    adapter_dir = ADAPTER_DIR / adapter_id
+    adapter_dir.mkdir(parents=True, exist_ok=True)
+
+    # Save and extract zip
+    zip_path = ADAPTER_DIR / f"{adapter_id}.zip"
+    with open(zip_path, "wb") as f:
+        content = await file.read()
+        f.write(content)
+
+    import zipfile
+    with zipfile.ZipFile(str(zip_path), "r") as zf:
+        zf.extractall(str(adapter_dir))
+
+    zip_path.unlink()  # cleanup zip
+
+    print(f"[+] Adapter {adapter_id[:8]} uploaded ({len(content)} bytes)")
+    return {"ok": True, "path": str(adapter_dir)}
+
+
+@app.get("/api/adapters/{adapter_id}/download")
+def api_download_adapter(adapter_id: str):
+    """Download a trained adapter as zip (for continue-training on agent)."""
+    adapter = get_adapter(adapter_id)
+    if not adapter or not adapter.get("lora_path"):
+        raise HTTPException(404, "Adapter not found or not trained")
+
+    adapter_dir = Path(adapter["lora_path"])
+    if not adapter_dir.exists():
+        raise HTTPException(404, "Adapter files not found")
+
+    import zipfile
+    zip_path = ADAPTER_DIR / f"{adapter_id}_download.zip"
+    with zipfile.ZipFile(str(zip_path), "w", zipfile.ZIP_DEFLATED) as zf:
+        for f in adapter_dir.rglob("*"):
+            if f.is_file() and "checkpoint" not in f.name:
+                zf.write(f, f.relative_to(adapter_dir))
+
+    return FileResponse(str(zip_path), filename=f"adapter_{adapter_id}.zip")
 
 
 # ──────────────────────────────────────────────
