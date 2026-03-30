@@ -569,7 +569,7 @@ async def agent_connect(websocket: WebSocket):
                 live_agents[agent_id]["state"] = "AVAILABLE"
 
                 job = get_job(job_id)
-                if job and job.get("adapter_id"):
+                if job and job.get("job_type") == "train" and job.get("adapter_id"):
                     update_adapter(job["adapter_id"], status="failed")
                 print(f"[-] Job {job_id[:8]} failed on {agent_name}: {error}")
 
