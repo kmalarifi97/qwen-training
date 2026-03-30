@@ -59,12 +59,12 @@ class JobRunner:
         adapter_upload_url = config["adapter_upload_url"]
         base_model = config.get("base_model", "Qwen/Qwen2.5-7B-Instruct")
         epochs = config.get("epochs", 3)
-        batch_size = config.get("batch_size", 4)
+        batch_size = config.get("batch_size", 1)
         lr = config.get("learning_rate", 2e-4)
-        lora_rank = config.get("lora_rank", 16)
-        lora_alpha = config.get("lora_alpha", 32)
-        max_length = config.get("max_length", 2048)
-        gradient_accumulation = config.get("gradient_accumulation", 4)
+        lora_rank = config.get("lora_rank", 8)
+        lora_alpha = config.get("lora_alpha", 16)
+        max_length = config.get("max_length", 512)
+        gradient_accumulation = config.get("gradient_accumulation", 8)
         resume_from_url = config.get("resume_from_url")
 
         # 1. Download dataset
@@ -177,6 +177,9 @@ class JobRunner:
             trust_remote_code=True,
         )
 
+        # Enable gradient checkpointing to save VRAM
+        model.gradient_checkpointing_enable()
+
         if resume_from and Path(resume_from).exists():
             await progress_callback(job_id, "Loading existing LoRA adapter...")
             model = PeftModel.from_pretrained(model, resume_from, is_trainable=True)
@@ -186,7 +189,7 @@ class JobRunner:
                 r=lora_rank,
                 lora_alpha=lora_alpha,
                 lora_dropout=0.05,
-                target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+                target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
             )
             model = get_peft_model(model, lora_config)
 
@@ -243,7 +246,8 @@ class JobRunner:
             logging_steps=5,
             save_strategy="epoch",
             eval_strategy="epoch",
-            bf16=True,
+            fp16=True,
+            gradient_checkpointing=True,
             report_to="none",
             remove_unused_columns=False,
         )
