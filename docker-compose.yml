@@ -1,0 +1,19 @@
+services:
+  qwen-engine:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+      - ./server:/app/server
+    environment:
+      - BASE_MODEL=Qwen/Qwen2.5-7B-Instruct
+      - DEVICE=auto
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped

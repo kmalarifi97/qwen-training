@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Qwen Training Engine</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f1117; color: #e1e4e8; }
+
+  .header { background: #161b22; border-bottom: 1px solid #30363d; padding: 16px 24px; display: flex; align-items: center; gap: 12px; }
+  .header h1 { font-size: 18px; font-weight: 600; }
+  .header .badge { background: #238636; color: #fff; padding: 2px 8px; border-radius: 12px; font-size: 12px; }
+
+  .layout { display: flex; min-height: calc(100vh - 57px); }
+  .sidebar { width: 200px; background: #161b22; border-right: 1px solid #30363d; padding: 16px 0; }
+  .sidebar a { display: block; padding: 8px 24px; color: #8b949e; text-decoration: none; font-size: 14px; cursor: pointer; }
+  .sidebar a:hover, .sidebar a.active { color: #e1e4e8; background: #1c2128; }
+  .main { flex: 1; padding: 24px; max-width: 960px; }
+
+  h2 { font-size: 20px; margin-bottom: 16px; }
+  .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; margin-bottom: 16px; }
+  .card h3 { font-size: 14px; margin-bottom: 12px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; }
+
+  label { display: block; font-size: 13px; color: #8b949e; margin-bottom: 4px; margin-top: 12px; }
+  label:first-child { margin-top: 0; }
+  input, select, textarea { width: 100%; padding: 8px 12px; background: #0d1117; border: 1px solid #30363d; border-radius: 6px; color: #e1e4e8; font-size: 14px; font-family: inherit; }
+  textarea { min-height: 80px; resize: vertical; font-family: 'SF Mono', monospace; font-size: 13px; }
+  input:focus, select:focus, textarea:focus { border-color: #58a6ff; outline: none; }
+
+  .btn { padding: 8px 16px; border-radius: 6px; border: 1px solid #30363d; background: #21262d; color: #e1e4e8; cursor: pointer; font-size: 14px; }
+  .btn:hover { background: #30363d; }
+  .btn-primary { background: #238636; border-color: #238636; }
+  .btn-primary:hover { background: #2ea043; }
+  .btn-danger { background: #da3633; border-color: #da3633; }
+  .btn-danger:hover { background: #f85149; }
+  .btn-sm { padding: 4px 10px; font-size: 12px; }
+  .actions { margin-top: 16px; display: flex; gap: 8px; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th { text-align: left; padding: 8px 12px; border-bottom: 1px solid #30363d; color: #8b949e; font-weight: 500; }
+  td { padding: 8px 12px; border-bottom: 1px solid #21262d; }
+  .status { padding: 2px 8px; border-radius: 12px; font-size: 12px; }
+  .status-ready, .status-completed { background: #1b4332; color: #40c057; }
+  .status-training, .status-running { background: #1a3a5c; color: #58a6ff; }
+  .status-pending { background: #2d2d0f; color: #d29922; }
+  .status-failed { background: #3d1a1a; color: #f85149; }
+
+  .empty { text-align: center; padding: 40px; color: #484f58; }
+  .row { display: flex; gap: 16px; }
+  .row > * { flex: 1; }
+  .mono { font-family: 'SF Mono', monospace; font-size: 13px; }
+
+  .tab-bar { display: flex; gap: 0; margin-bottom: 20px; border-bottom: 1px solid #30363d; }
+  .tab { padding: 8px 16px; cursor: pointer; color: #8b949e; border-bottom: 2px solid transparent; font-size: 14px; }
+  .tab:hover { color: #e1e4e8; }
+  .tab.active { color: #e1e4e8; border-bottom-color: #f78166; }
+
+  .section { display: none; }
+  .section.active { display: block; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Qwen Training Engine</h1>
+  <span class="badge">Local & Private</span>
+</div>
+
+<div class="layout">
+  <nav class="sidebar">
+    <a class="active" onclick="showSection('interfaces')">Interfaces</a>
+    <a onclick="showSection('adapters')">Adapters</a>
+    <a onclick="showSection('dataprep')">Data Prep</a>
+    <a onclick="showSection('training')">Training</a>
+    <a onclick="showSection('inference')">Inference</a>
+    <a onclick="showSection('jobs')">Jobs</a>
+  </nav>
+
+  <div class="main">
+
+    <!-- INTERFACES -->
+    <div id="sec-interfaces" class="section active">
+      <h2>Training Interfaces</h2>
+      <p style="color:#8b949e;margin-bottom:16px;font-size:14px">Define how different file types map to training pairs.</p>
+
+      <div class="card">
+        <h3>New Interface</h3>
+        <div class="row">
+          <div><label>Name</label><input id="iface-name" placeholder="healthcare_fraud"></div>
+          <div><label>File Type</label>
+            <select id="iface-filetype"><option value="csv">CSV</option><option value="txt">Text</option><option value="pdf">PDF</option></select>
+          </div>
+        </div>
+        <label>Description</label>
+        <input id="iface-desc" placeholder="Fraud detection on healthcare claims">
+        <label>Instruction (system prompt for the model)</label>
+        <textarea id="iface-instruction" placeholder="Analyze this healthcare claim and classify if there is fraud. Return JSON with fraud_type and reason."></textarea>
+        <label>Input Template (Jinja2 — use column names as variables)</label>
+        <textarea id="iface-template" placeholder="Patient ID: {{ patient_id }} | Age: {{ age }} | Diagnosis: {{ diagnosis }} | Treatment: {{ treatment }} | Amount: {{ amount_billed }}"></textarea>
+        <label>Output JSON Schema</label>
+        <textarea id="iface-schema" placeholder='{"properties": {"fraud_type": {"type": "string"}, "reason": {"type": "string"}}}'></textarea>
+        <div class="actions"><button class="btn btn-primary" onclick="createInterface()">Create Interface</button></div>
+      </div>
+
+      <div class="card">
+        <h3>Registered Interfaces</h3>
+        <div id="interfaces-list"><div class="empty">No interfaces yet</div></div>
+      </div>
+    </div>
+
+    <!-- ADAPTERS -->
+    <div id="sec-adapters" class="section">
+      <h2>LoRA Adapters</h2>
+      <p style="color:#8b949e;margin-bottom:16px;font-size:14px">Trained model adapters — one per domain/interface.</p>
+
+      <div class="card">
+        <h3>New Adapter</h3>
+        <div class="row">
+          <div><label>Name</label><input id="adapter-name" placeholder="healthcare_fraud_v1"></div>
+          <div><label>Interface</label><select id="adapter-iface"></select></div>
+        </div>
+        <div class="actions"><button class="btn btn-primary" onclick="createAdapter()">Create Adapter</button></div>
+      </div>
+
+      <div class="card">
+        <h3>Registered Adapters</h3>
+        <div id="adapters-list"><div class="empty">No adapters yet</div></div>
+      </div>
+    </div>
+
+    <!-- DATA PREP -->
+    <div id="sec-dataprep" class="section">
+      <h2>Data Preparation</h2>
+      <p style="color:#8b949e;margin-bottom:16px;font-size:14px">Upload a file and generate training pairs using an interface definition.</p>
+
+      <div class="card">
+        <h3>Generate Dataset</h3>
+        <label>Interface</label>
+        <select id="dp-iface"></select>
+        <label>Upload File</label>
+        <input type="file" id="dp-file">
+        <label>Output Field Mapping (JSON — maps output schema keys to CSV columns)</label>
+        <textarea id="dp-mapping" class="mono" placeholder='{"fraud_type": "Fraud Type", "reason": null}'></textarea>
+        <div class="actions"><button class="btn btn-primary" onclick="runDataprep()">Generate Pairs</button></div>
+      </div>
+    </div>
+
+    <!-- TRAINING -->
+    <div id="sec-training" class="section">
+      <h2>LoRA Training</h2>
+      <p style="color:#8b949e;margin-bottom:16px;font-size:14px">Fine-tune Qwen on a prepared dataset.</p>
+
+      <div class="card">
+        <h3>Start Training</h3>
+        <div class="row">
+          <div><label>Adapter</label><select id="train-adapter"></select></div>
+          <div><label>Dataset Job</label><select id="train-dataset"></select></div>
+        </div>
+        <div class="row">
+          <div><label>Epochs</label><input id="train-epochs" type="number" value="3"></div>
+          <div><label>Learning Rate</label><input id="train-lr" value="0.0002"></div>
+          <div><label>LoRA Rank</label><input id="train-rank" type="number" value="16"></div>
+          <div><label>Batch Size</label><input id="train-batch" type="number" value="4"></div>
+        </div>
+        <label style="margin-top:12px;display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" id="train-continue" style="width:auto">
+          <span>Continue training on existing adapter (feed new data into an already-trained adapter)</span>
+        </label>
+        <div class="actions"><button class="btn btn-primary" onclick="startTraining()">Start Training</button></div>
+      </div>
+    </div>
+
+    <!-- INFERENCE -->
+    <div id="sec-inference" class="section">
+      <h2>Inference</h2>
+      <p style="color:#8b949e;margin-bottom:16px;font-size:14px">Test your trained adapters.</p>
+
+      <div class="card">
+        <h3>Run Inference</h3>
+        <label>Adapter (optional — leave empty for base model)</label>
+        <select id="inf-adapter"><option value="">Base Model (no adapter)</option></select>
+        <label>Instruction</label>
+        <textarea id="inf-instruction" placeholder="Analyze this healthcare claim..."></textarea>
+        <label>Input</label>
+        <textarea id="inf-input" placeholder="Patient ID: 123 | Age: 45 | ..."></textarea>
+        <div class="row">
+          <div><label>Max Tokens</label><input id="inf-tokens" type="number" value="1024"></div>
+          <div><label>Temperature</label><input id="inf-temp" value="0.3"></div>
+        </div>
+        <div class="actions"><button class="btn btn-primary" onclick="runInference()">Generate</button></div>
+        <label>Output</label>
+        <textarea id="inf-output" readonly style="min-height:120px;background:#0d1117"></textarea>
+      </div>
+    </div>
+
+    <!-- JOBS -->
+    <div id="sec-jobs" class="section">
+      <h2>Jobs</h2>
+      <div class="card">
+        <div id="jobs-list"><div class="empty">No jobs yet</div></div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+const API = '';
+
+function showSection(name) {
+  document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+  document.querySelectorAll('.sidebar a').forEach(a => a.classList.remove('active'));
+  document.getElementById('sec-' + name).classList.add('active');
+  document.querySelector(`.sidebar a[onclick="showSection('${name}')"]`).classList.add('active');
+  refresh();
+}
+
+async function api(path, opts = {}) {
+  const r = await fetch(API + path, opts);
+  if (!r.ok) { const e = await r.text(); alert('Error: ' + e); throw new Error(e); }
+  return r.json();
+}
+
+// --- Interfaces ---
+async function loadInterfaces() {
+  const list = await api('/api/interfaces');
+  const el = document.getElementById('interfaces-list');
+  if (!list.length) { el.innerHTML = '<div class="empty">No interfaces yet</div>'; return; }
+  el.innerHTML = `<table><tr><th>Name</th><th>Type</th><th>Description</th><th></th></tr>
+    ${list.map(i => `<tr><td><strong>${i.name}</strong></td><td>${i.file_type}</td><td>${i.description||''}</td>
+    <td><button class="btn btn-danger btn-sm" onclick="deleteInterface('${i.id}')">Delete</button></td></tr>`).join('')}</table>`;
+
+  // Populate selects
+  ['adapter-iface','dp-iface'].forEach(id => {
+    const sel = document.getElementById(id);
+    sel.innerHTML = list.map(i => `<option value="${i.id}">${i.name}</option>`).join('');
+  });
+}
+
+async function createInterface() {
+  const fd = new FormData();
+  fd.append('name', document.getElementById('iface-name').value);
+  fd.append('description', document.getElementById('iface-desc').value);
+  fd.append('file_type', document.getElementById('iface-filetype').value);
+  fd.append('instruction', document.getElementById('iface-instruction').value);
+  fd.append('input_template', document.getElementById('iface-template').value);
+  fd.append('output_schema', document.getElementById('iface-schema').value);
+  await api('/api/interfaces', { method: 'POST', body: fd });
+  refresh();
+}
+
+async function deleteInterface(id) {
+  if (!confirm('Delete this interface?')) return;
+  await api('/api/interfaces/' + id, { method: 'DELETE' });
+  refresh();
+}
+
+// --- Adapters ---
+async function loadAdapters() {
+  const list = await api('/api/adapters');
+  const el = document.getElementById('adapters-list');
+  if (!list.length) { el.innerHTML = '<div class="empty">No adapters yet</div>'; return; }
+  el.innerHTML = `<table><tr><th>Name</th><th>Interface</th><th>Status</th><th>Samples</th><th>Loss</th><th></th></tr>
+    ${list.map(a => `<tr><td><strong>${a.name}</strong></td><td>${a.interface_name||''}</td>
+    <td><span class="status status-${a.status}">${a.status}</span></td>
+    <td>${a.train_samples||'-'}</td><td>${a.train_loss ? a.train_loss.toFixed(4) : '-'}</td>
+    <td><button class="btn btn-danger btn-sm" onclick="deleteAdapter('${a.id}')">Delete</button></td></tr>`).join('')}</table>`;
+
+  // Populate selects
+  ['train-adapter'].forEach(id => {
+    const sel = document.getElementById(id);
+    sel.innerHTML = list.map(a => `<option value="${a.id}">${a.name} (${a.status})</option>`).join('');
+  });
+  const infSel = document.getElementById('inf-adapter');
+  infSel.innerHTML = '<option value="">Base Model (no adapter)</option>' +
+    list.filter(a => a.status === 'ready').map(a => `<option value="${a.id}">${a.name}</option>`).join('');
+}
+
+async function createAdapter() {
+  const fd = new FormData();
+  fd.append('name', document.getElementById('adapter-name').value);
+  fd.append('interface_id', document.getElementById('adapter-iface').value);
+  await api('/api/adapters', { method: 'POST', body: fd });
+  refresh();
+}
+
+async function deleteAdapter(id) {
+  if (!confirm('Delete this adapter and its weights?')) return;
+  await api('/api/adapters/' + id, { method: 'DELETE' });
+  refresh();
+}
+
+// --- Data Prep ---
+async function runDataprep() {
+  const fd = new FormData();
+  fd.append('interface_id', document.getElementById('dp-iface').value);
+  fd.append('file', document.getElementById('dp-file').files[0]);
+  fd.append('output_field_mapping', document.getElementById('dp-mapping').value || '{}');
+  const job = await api('/api/dataprep', { method: 'POST', body: fd });
+  alert('Data prep job started: ' + job.id);
+  showSection('jobs');
+}
+
+// --- Training ---
+async function loadDatasetJobs() {
+  const jobs = await api('/api/jobs?job_type=dataprep');
+  const sel = document.getElementById('train-dataset');
+  const completed = jobs.filter(j => j.status === 'completed');
+  sel.innerHTML = completed.map(j => {
+    const cfg = JSON.parse(j.config || '{}');
+    return `<option value="${j.id}">${j.id.slice(0,8)} — ${cfg.pairs_count||'?'} pairs</option>`;
+  }).join('');
+}
+
+async function startTraining() {
+  const fd = new FormData();
+  fd.append('adapter_id', document.getElementById('train-adapter').value);
+  fd.append('dataset_job_id', document.getElementById('train-dataset').value);
+  fd.append('epochs', document.getElementById('train-epochs').value);
+  fd.append('learning_rate', document.getElementById('train-lr').value);
+  fd.append('lora_rank', document.getElementById('train-rank').value);
+  fd.append('batch_size', document.getElementById('train-batch').value);
+  fd.append('continue_training', document.getElementById('train-continue').checked);
+  const job = await api('/api/train', { method: 'POST', body: fd });
+  alert('Training job started: ' + job.id);
+  showSection('jobs');
+}
+
+// --- Inference ---
+async function runInference() {
+  const fd = new FormData();
+  const adapterId = document.getElementById('inf-adapter').value;
+  if (adapterId) fd.append('adapter_id', adapterId);
+  fd.append('instruction', document.getElementById('inf-instruction').value);
+  fd.append('input_text', document.getElementById('inf-input').value);
+  fd.append('max_tokens', document.getElementById('inf-tokens').value);
+  fd.append('temperature', document.getElementById('inf-temp').value);
+  document.getElementById('inf-output').value = 'Generating...';
+  try {
+    const result = await api('/api/inference', { method: 'POST', body: fd });
+    document.getElementById('inf-output').value = result.response;
+  } catch(e) {
+    document.getElementById('inf-output').value = 'Error: ' + e.message;
+  }
+}
+
+// --- Jobs ---
+async function loadJobs() {
+  const jobs = await api('/api/jobs');
+  const el = document.getElementById('jobs-list');
+  if (!jobs.length) { el.innerHTML = '<div class="empty">No jobs yet</div>'; return; }
+  el.innerHTML = `<table><tr><th>ID</th><th>Type</th><th>Status</th><th>Created</th><th>Actions</th></tr>
+    ${jobs.map(j => {
+      const cfg = JSON.parse(j.config || '{}');
+      const dl = j.status === 'completed' && j.job_type === 'dataprep'
+        ? `<a href="/api/datasets/${j.id}/download" class="btn btn-sm">Download</a>` : '';
+      return `<tr><td class="mono">${j.id.slice(0,8)}</td><td>${j.job_type}</td>
+      <td><span class="status status-${j.status}">${j.status}</span></td>
+      <td>${j.created_at.slice(0,16)}</td><td>${dl} ${j.error ? '<span style="color:#f85149">'+j.error.slice(0,60)+'</span>' : ''}</td></tr>`;
+    }).join('')}</table>`;
+}
+
+// --- Refresh all ---
+async function refresh() {
+  await Promise.all([loadInterfaces(), loadAdapters(), loadJobs(), loadDatasetJobs()]);
+}
+
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>
