@@ -37,6 +37,7 @@ def _load_gpu_modules():
         engine = _eng
 
 _DATA = Path(os.environ.get("DATA_DIR", "/app/data"))
+SERVER_BASE_URL = os.environ.get("SERVER_BASE_URL", "http://localhost:8000")
 UPLOAD_DIR = _DATA / "uploads"
 DATASET_DIR = _DATA / "datasets"
 ADAPTER_DIR = _DATA / "adapters"
@@ -589,7 +590,7 @@ def _find_pending_agent_job() -> dict | None:
                 "job_id": job["id"],
                 "job_type": "train",
                 "config": json.dumps({
-                    "server_base_url": "",  # agent builds full URL from its connection
+                    "server_base_url": SERVER_BASE_URL,
                     "dataset_url": f"/api/datasets/{config.get('dataset_job_id', job['id'])}/download",
                     "adapter_upload_url": f"/api/adapters/{adapter_id}/upload" if adapter_id else "",
                     "base_model": BASE_MODEL,
