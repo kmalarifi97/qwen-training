@@ -17,7 +17,7 @@ import httpx
 from jinja2 import Template
 
 
-DATA_DIR = Path("/app/data")
+DATA_DIR = Path(os.environ.get("DATA_DIR", "/app/data"))
 UPLOADS_DIR = DATA_DIR / "uploads"
 DATASETS_DIR = DATA_DIR / "datasets"
 

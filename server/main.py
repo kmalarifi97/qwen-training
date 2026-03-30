@@ -36,9 +36,10 @@ def _load_gpu_modules():
         train_lora = _tl
         engine = _eng
 
-UPLOAD_DIR = Path("/app/data/uploads")
-DATASET_DIR = Path("/app/data/datasets")
-ADAPTER_DIR = Path("/app/data/adapters")
+_DATA = Path(os.environ.get("DATA_DIR", "/app/data"))
+UPLOAD_DIR = _DATA / "uploads"
+DATASET_DIR = _DATA / "datasets"
+ADAPTER_DIR = _DATA / "adapters"
 BASE_MODEL = os.environ.get("BASE_MODEL", "Qwen/Qwen2.5-7B-Instruct")
 
 app = FastAPI(title="Qwen Training Engine", version="1.0.0")

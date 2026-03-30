@@ -17,7 +17,7 @@ from peft import LoraConfig, PeftModel, get_peft_model, TaskType
 
 from server.database import update_adapter
 
-ADAPTERS_DIR = Path("/app/data/adapters")
+ADAPTERS_DIR = Path(os.environ.get("DATA_DIR", "/app/data")) / "adapters"
 BASE_MODEL = os.environ.get("BASE_MODEL", "Qwen/Qwen2.5-7B-Instruct")
 
 

@@ -2,7 +2,7 @@ services:
   qwen-engine:
     build: .
     ports:
-      - "8000:8000"
+      - "8090:8000"
     volumes:
       - ./data:/app/data
       - ./server:/app/server

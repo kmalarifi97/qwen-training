@@ -1,10 +1,11 @@
+import os
 import sqlite3
 import json
 import uuid
 from datetime import datetime
 from pathlib import Path
 
-DB_PATH = Path("/app/data/db/engine.db")
+DB_PATH = Path(os.environ.get("DATA_DIR", "/app/data")) / "db" / "engine.db"
 
 
 def get_db() -> sqlite3.Connection:

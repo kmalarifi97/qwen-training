@@ -9,7 +9,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import PeftModel
 
 BASE_MODEL = os.environ.get("BASE_MODEL", "Qwen/Qwen2.5-7B-Instruct")
-ADAPTERS_DIR = Path("/app/data/adapters")
+ADAPTERS_DIR = Path(os.environ.get("DATA_DIR", "/app/data")) / "adapters"
 
 
 class InferenceEngine:
