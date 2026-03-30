@@ -1,0 +1,10 @@
+websockets==12.0
+httpx==0.27.0
+pynvml
+psutil
+torch
+transformers
+peft
+bitsandbytes
+datasets
+accelerate

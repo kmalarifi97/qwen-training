@@ -23,8 +23,18 @@ from server.dataprep import (
     generate_pairs_gemini_csv, generate_pairs_gemini_text,
     GEMINI_API_KEY,
 )
-from server.trainer import train_lora
-from server.inference import engine
+# Lazy imports — only used for local training/inference (requires GPU + torch)
+# In server-only mode (GPU work on Colab), these are never called
+train_lora = None
+engine = None
+
+def _load_gpu_modules():
+    global train_lora, engine
+    if train_lora is None:
+        from server.trainer import train_lora as _tl
+        from server.inference import engine as _eng
+        train_lora = _tl
+        engine = _eng
 
 UPLOAD_DIR = Path("/app/data/uploads")
 DATASET_DIR = Path("/app/data/datasets")
@@ -336,7 +346,8 @@ def api_train(
 def run_training(job_id: str, adapter_id: str, dataset_path: str,
                  epochs: int, lr: float, rank: int, batch_size: int,
                  resume_from: str = None, prev_samples: int = 0):
-    """Background task: LoRA fine-tuning."""
+    """Background task: LoRA fine-tuning (local GPU only)."""
+    _load_gpu_modules()
     update_job(job_id, status="running")
     try:
         result = train_lora(
@@ -378,6 +389,7 @@ async def api_inference(
         adapter_path = adapter["lora_path"]
 
     try:
+        _load_gpu_modules()
         response = engine.generate(
             instruction=instruction,
             input_text=input_text,

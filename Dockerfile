@@ -1,13 +1,6 @@
-FROM nvidia/cuda:12.1.1-devel-ubuntu22.04
+FROM python:3.11-slim
 
-ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
-
-RUN apt-get update && apt-get install -y \
-    python3.11 python3.11-venv python3-pip git \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN ln -sf /usr/bin/python3.11 /usr/bin/python
 
 WORKDIR /app
 
