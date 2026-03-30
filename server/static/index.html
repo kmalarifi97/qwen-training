@@ -72,6 +72,7 @@
     <a class="active" onclick="showSection('interfaces')">Interfaces</a>
     <a onclick="showSection('adapters')">Adapters</a>
     <a onclick="showSection('dataprep')">Data Prep</a>
+    <a onclick="showSection('gemini')">Gemini Gen</a>
     <a onclick="showSection('training')">Training</a>
     <a onclick="showSection('inference')">Inference</a>
     <a onclick="showSection('jobs')">Jobs</a>
@@ -143,6 +144,30 @@
         <label>Output Field Mapping (JSON — maps output schema keys to CSV columns)</label>
         <textarea id="dp-mapping" class="mono" placeholder='{"fraud_type": "Fraud Type", "reason": null}'></textarea>
         <div class="actions"><button class="btn btn-primary" onclick="runDataprep()">Generate Pairs</button></div>
+      </div>
+    </div>
+
+    <!-- GEMINI GEN -->
+    <div id="sec-gemini" class="section">
+      <h2>Gemini Pair Generation</h2>
+      <p style="color:#8b949e;margin-bottom:16px;font-size:14px">Upload a file and let Gemini generate diverse, high-quality training pairs automatically.</p>
+
+      <div class="card">
+        <h3>Generate with Gemini</h3>
+        <label>Upload File (CSV, TXT)</label>
+        <input type="file" id="gem-file">
+        <label>Pairs per Batch</label>
+        <input id="gem-pairs" type="number" value="10" min="1" max="50">
+        <p style="color:#484f58;font-size:12px;margin-top:4px">
+          CSV: each batch = 20 rows. A 1500-row CSV = 75 batches &times; 10 pairs = ~750 training pairs.<br>
+          TXT: each batch = one text chunk (~2500 chars).
+        </p>
+        <div class="actions"><button class="btn btn-primary" onclick="runGemini()">Generate Pairs</button></div>
+      </div>
+
+      <div class="card">
+        <h3>Gemini Jobs</h3>
+        <div id="gemini-jobs"><div class="empty">No Gemini jobs yet</div></div>
       </div>
     </div>
 
@@ -302,6 +327,40 @@ async function runDataprep() {
   showSection('jobs');
 }
 
+// --- Gemini ---
+async function runGemini() {
+  const fileInput = document.getElementById('gem-file');
+  if (!fileInput.files.length) { alert('Select a file first'); return; }
+  const fd = new FormData();
+  fd.append('file', fileInput.files[0]);
+  fd.append('pairs_per_batch', document.getElementById('gem-pairs').value);
+  const job = await api('/api/dataprep/gemini', { method: 'POST', body: fd });
+  alert('Gemini generation started: ' + job.id);
+  showSection('jobs');
+}
+
+async function loadGeminiJobs() {
+  const jobs = await api('/api/jobs?job_type=dataprep');
+  const gemini = jobs.filter(j => {
+    const cfg = JSON.parse(j.config || '{}');
+    return cfg.mode === 'gemini';
+  });
+  const el = document.getElementById('gemini-jobs');
+  if (!gemini.length) { el.innerHTML = '<div class="empty">No Gemini jobs yet</div>'; return; }
+  el.innerHTML = `<table><tr><th>ID</th><th>Status</th><th>Pairs</th><th>Progress</th><th>Actions</th></tr>
+    ${gemini.map(j => {
+      const cfg = JSON.parse(j.config || '{}');
+      const pct = j.progress ? (j.progress * 100).toFixed(0) + '%' : '0%';
+      const dl = j.status === 'completed'
+        ? `<a href="/api/datasets/${j.id}/download?format=raw" class="btn btn-sm">JSONL</a> <a href="/api/datasets/${j.id}/download" class="btn btn-sm">ChatML</a>` : '';
+      return `<tr><td class="mono">${j.id.slice(0,8)}</td>
+      <td><span class="status status-${j.status}">${j.status}</span></td>
+      <td>${cfg.pairs_count || cfg.pairs_so_far || '-'}</td>
+      <td>${pct}</td>
+      <td>${dl} ${j.error ? '<span style="color:#f85149">'+j.error.slice(0,60)+'</span>' : ''}</td></tr>`;
+    }).join('')}</table>`;
+}
+
 // --- Training ---
 async function loadDatasetJobs() {
   const jobs = await api('/api/jobs?job_type=dataprep');
@@ -363,7 +422,7 @@ async function loadJobs() {
 
 // --- Refresh all ---
 async function refresh() {
-  await Promise.all([loadInterfaces(), loadAdapters(), loadJobs(), loadDatasetJobs()]);
+  await Promise.all([loadInterfaces(), loadAdapters(), loadJobs(), loadDatasetJobs(), loadGeminiJobs()]);
 }
 
 refresh();

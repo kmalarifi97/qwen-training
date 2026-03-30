@@ -9,6 +9,7 @@ services:
     environment:
       - BASE_MODEL=Qwen/Qwen2.5-7B-Instruct
       - DEVICE=auto
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
     deploy:
       resources:
         reservations:

@@ -1,5 +1,6 @@
 """Qwen Training Engine — FastAPI app with model registry, LoRA training, and inference."""
 
+import asyncio
 import json
 import os
 import shutil
@@ -19,6 +20,8 @@ from server.database import (
 from server.dataprep import (
     parse_csv, generate_pairs_from_csv, generate_pairs_from_text,
     save_pairs_jsonl, save_chatml_jsonl,
+    generate_pairs_gemini_csv, generate_pairs_gemini_text,
+    GEMINI_API_KEY,
 )
 from server.trainer import train_lora
 from server.inference import engine
@@ -177,6 +180,93 @@ def run_dataprep(job_id: str, iface: dict, file_path: str, mapping: dict):
         )
     except Exception as e:
         update_job(job_id, status="failed", error=str(e))
+
+
+# ──────────────────────────────────────────────
+#  Gemini Data Preparation
+# ──────────────────────────────────────────────
+
+@app.post("/api/dataprep/gemini")
+async def api_dataprep_gemini(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    pairs_per_batch: int = Form(10),
+):
+    if not GEMINI_API_KEY:
+        raise HTTPException(400, "GEMINI_API_KEY not set")
+
+    # Save uploaded file
+    upload_path = UPLOAD_DIR / file.filename
+    with open(upload_path, "wb") as f:
+        content = await file.read()
+        f.write(content)
+
+    # Detect file type
+    ext = Path(file.filename).suffix.lower()
+
+    job = create_job(
+        job_type="dataprep",
+        input_file=str(upload_path),
+        config={
+            "mode": "gemini",
+            "pairs_per_batch": pairs_per_batch,
+            "file_type": ext,
+        },
+    )
+
+    background_tasks.add_task(run_gemini_dataprep, job["id"], str(upload_path), ext, pairs_per_batch)
+    return job
+
+
+async def _run_gemini_dataprep_async(job_id: str, file_path: str, ext: str, pairs_per_batch: int):
+    """Async Gemini data prep."""
+    update_job(job_id, status="running")
+
+    try:
+        async def progress_cb(done, total, pair_count):
+            update_job(job_id, progress=done / total if total else 0,
+                       config=json.dumps({
+                           "mode": "gemini",
+                           "processed": done,
+                           "total_batches": total,
+                           "pairs_so_far": pair_count,
+                       }))
+
+        if ext == ".csv":
+            pairs = await generate_pairs_gemini_csv(
+                file_path=file_path,
+                pairs_per_batch=pairs_per_batch,
+                progress_callback=progress_cb,
+            )
+        else:
+            pairs = await generate_pairs_gemini_text(
+                file_path=file_path,
+                pairs_per_chunk=pairs_per_batch,
+                progress_callback=progress_cb,
+            )
+
+        raw_path = save_pairs_jsonl(pairs, job_id)
+        chatml_path = save_chatml_jsonl(pairs, job_id)
+
+        update_job(
+            job_id,
+            status="completed",
+            output_file=chatml_path,
+            progress=1.0,
+            config=json.dumps({
+                "mode": "gemini",
+                "pairs_count": len(pairs),
+                "raw_path": raw_path,
+                "chatml_path": chatml_path,
+            }),
+        )
+    except Exception as e:
+        update_job(job_id, status="failed", error=str(e))
+
+
+def run_gemini_dataprep(job_id: str, file_path: str, ext: str, pairs_per_batch: int):
+    """Background task wrapper — runs async Gemini pipeline in its own event loop."""
+    asyncio.run(_run_gemini_dataprep_async(job_id, file_path, ext, pairs_per_batch))
 
 
 # ──────────────────────────────────────────────

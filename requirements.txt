@@ -11,3 +11,4 @@ bitsandbytes==0.43.0
 vllm==0.5.4
 jinja2==3.1.4
 pandas==2.2.2
+httpx==0.27.0
